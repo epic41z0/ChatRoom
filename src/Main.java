@@ -26,7 +26,7 @@ public class Main extends JFrame {
             System.exit(0);
         }
 
-        setTitle("Chat Application - " + username); // Uppdatera titeln med användarnamnet
+        setTitle("Chat " + username); // Uppdatera titeln med användarnamnet
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setSize(600, 400);
         setLayout(new BorderLayout());
@@ -91,7 +91,7 @@ public class Main extends JFrame {
         receiveThread.start();
 
         // Meddela när användaren kopplar upp sig
-        sendSystemMessage(username + " har anslutit till chatten.\n");
+        sendSystemMessage(username + " UPPKOPPLAD.\n");
 
         setVisible(true);
     }
