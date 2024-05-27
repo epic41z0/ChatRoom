@@ -4,6 +4,7 @@ import java.awt.event.*;
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.*;
 
 public class Main extends JFrame {
     private JTextArea chatArea;
@@ -11,12 +12,15 @@ public class Main extends JFrame {
     private JButton sendButton;
     private JButton disconnectButton;
     private String username; // Användarnamn
-    private DefaultListModel<String> userListModel;
-    private JList<String> userList;
+    private JTextArea userListArea;
 
     private MulticastSocket multicastSocket;
     private InetAddress multicastGroup;
     private int multicastPort = 12345;
+
+    // Använd ConcurrentHashMap för att hantera anslutna användare
+    private static ConcurrentHashMap<String, Boolean> connectedUsers = new ConcurrentHashMap<>();
+    private ExecutorService executor = Executors.newFixedThreadPool(2);
 
     public Main() {
         // Visa dialogruta för att ange användarnamn
@@ -64,9 +68,9 @@ public class Main extends JFrame {
 
         add(bottomPanel, BorderLayout.SOUTH);
 
-        userListModel = new DefaultListModel<>();
-        userList = new JList<>(userListModel);
-        JScrollPane userScrollPane = new JScrollPane(userList);
+        userListArea = new JTextArea();
+        userListArea.setEditable(false);
+        JScrollPane userScrollPane = new JScrollPane(userListArea);
         userScrollPane.setPreferredSize(new Dimension(150, 0));
         add(userScrollPane, BorderLayout.EAST);
 
@@ -83,15 +87,18 @@ public class Main extends JFrame {
             e.printStackTrace();
         }
 
-        Thread receiveThread = new Thread(() -> {
-            while (true) {
-                receiveMessage();
-            }
-        });
-        receiveThread.start();
+        // Starta mottagningstråden
+        executor.execute(this::receiveMessages);
+
+        // Starta tråd för att periodiskt skicka användarlistan
+        executor.execute(this::sendUserListPeriodically);
 
         // Meddela när användaren kopplar upp sig
-        sendSystemMessage(username + " UPPKOPPLAD.\n");
+        sendSystemMessage(username + " har anslutit till chatten.\n");
+
+        // Lägg till den nya användaren i listan
+        connectedUsers.put(username, true);
+        updateConnectedUsers();
 
         setVisible(true);
     }
@@ -109,21 +116,31 @@ public class Main extends JFrame {
         }
     }
 
-    private void receiveMessage() {
+    private void receiveMessages() {
         try {
-            byte[] buffer = new byte[1024];
-            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            multicastSocket.receive(packet);
-            String message = new String(packet.getData(), 0, packet.getLength());
-            if (message.contains("har anslutit till chatten") || message.contains("har kopplat ner från chatten")) {
-                String username = message.split(" ")[0]; // Extrahera användarnamnet från meddelandet
-                if (!userListModel.contains(username)) {
-                    userListModel.addElement(username);
+            while (true) {
+                byte[] buffer = new byte[1024];
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                multicastSocket.receive(packet);
+                String message = new String(packet.getData(), 0, packet.getLength());
+
+                if (message.startsWith("USERLIST:")) {
+                    updateConnectedUsersFromMessage(message);
                 } else {
-                    userListModel.removeElement(username);
+                    SwingUtilities.invokeLater(() -> chatArea.append(message));
+                    if (message.endsWith("har anslutit till chatten.\n")) {
+                        String newUsername = message.split(" ")[0];
+                        if (!connectedUsers.containsKey(newUsername)) {
+                            connectedUsers.put(newUsername, true);
+                            updateConnectedUsers();
+                        }
+                    } else if (message.endsWith("har kopplat ner från chatten.\n")) {
+                        String disconnectedUsername = message.split(" ")[0];
+                        connectedUsers.remove(disconnectedUsername);
+                        updateConnectedUsers();
+                    }
                 }
             }
-            chatArea.append(message);
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -132,10 +149,12 @@ public class Main extends JFrame {
     private void disconnect() {
         try {
             // Meddela när användaren kopplar ner
-            sendSystemMessage(username + " har kopplat ner från chatten.");
+            sendSystemMessage(username + " har kopplat ner från chatten.\n");
 
             multicastSocket.leaveGroup(multicastGroup);
             multicastSocket.close();
+            connectedUsers.remove(username);
+            updateConnectedUsers();
             System.exit(0);
         } catch (IOException e) {
             e.printStackTrace();
@@ -153,7 +172,47 @@ public class Main extends JFrame {
         }
     }
 
+    // Uppdatera användarlistan i UI
+    private void updateConnectedUsers() {
+        SwingUtilities.invokeLater(() -> {
+            userListArea.setText("");
+            for (String user : connectedUsers.keySet()) {
+                userListArea.append(user + "\n");
+            }
+        });
+    }
+
+    // Uppdatera användarlistan baserat på mottaget meddelande
+    private void updateConnectedUsersFromMessage(String message) {
+        SwingUtilities.invokeLater(() -> {
+            userListArea.setText("");
+            String[] users = message.substring(9).split(",");
+            for (String user : users) {
+                if (!user.isEmpty()) {
+                    userListArea.append(user.trim() + "\n");
+                    connectedUsers.put(user.trim(), true);
+                }
+            }
+        });
+    }
+
+    // Skicka användarlistan periodiskt
+    private void sendUserListPeriodically() {
+        try {
+            while (true) {
+                StringBuilder userListMessage = new StringBuilder("USERLIST:");
+                for (String user : connectedUsers.keySet()) {
+                    userListMessage.append(user).append(",");
+                }
+                sendSystemMessage(userListMessage.toString() + "\n");
+                Thread.sleep(5000); // Vänta 5 sekunder innan nästa uppdatering
+            }
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new Main());
+        SwingUtilities.invokeLater(Main::new);
     }
 }
